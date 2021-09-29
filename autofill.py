@@ -22,7 +22,7 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 from numpy import array as np_array, uint8 as np_uint8
-from requests import post as requests_post
+from requests import post as requests_post, get as requests_get
 from requests.exceptions import Timeout as requests_Timeout
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
@@ -328,6 +328,16 @@ def get_file_name(source_type, cardinfo):
         return cardinfo[2]
 
 
+def get_filename_id(source_type, filename, file_id):
+    filename_split = filename.rsplit(".", 1)
+
+    safe_file_id = file_id
+    if source_type == 'http':
+        safe_file_id = 'http'  # TODO
+
+    return filename_split[0] + " (" + safe_file_id + ")." + filename_split[1]
+
+
 def download_card(bar: tqdm, cardinfo):
     card_item = ("", "")
     try:
@@ -342,8 +352,7 @@ def download_card(bar: tqdm, cardinfo):
         # Google Drive without modifying the filename, it should work as expected
         # However, looking for the file with the ID in parentheses is preferred because it eliminates the possibility
         # of filename clashes between different images
-        filename_split = filename.rsplit(".", 1)
-        filename_id = filename_split[0] + " (" + file_id + ")." + filename_split[1]
+        filename_id = get_filename_id(source_type, filename, file_id)
 
         # Filepath from filename
         # TODO: os.path.join?
@@ -385,7 +394,15 @@ def download_card(bar: tqdm, cardinfo):
 
 
 def download_card_http(file_id, filename, filepath):
-    q_error.put(f"http download logic yet not implemented, but file_id = {file_id}, filename = {filename}, filepath = {filepath}")
+    # q_error.put(f"http download logic yet not implemented, but file_id = {file_id}, filename = {filename}, filepath = {filepath}")
+    try:
+        with requests_get(file_id, timeout=120, stream=True, verify=False) as r:
+            r.raise_for_status()
+            with open(filepath, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+    except requests_Timeout:
+        q_error.put(file_id)
 
 
 def download_card_drive(file_id, filename, filepath):
