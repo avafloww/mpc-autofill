@@ -314,6 +314,19 @@ def drive_get_card_filename(cardinfo):
             return None
 
 
+def http_get_card_filename(cardinfo):
+    file_id = cardinfo[0]
+    try:
+        filename = cardinfo[2]
+        # this is pretty fucking stupid but if it works it works
+        if filename == "":
+            raise IndexError
+
+        return filename
+    except IndexError:
+        return file_id.rsplit(r'/', 1)[1]
+
+
 def get_file_source_type(file_id):
     if file_id.startswith('http'):
         return 'http'
@@ -325,7 +338,7 @@ def get_file_name(source_type, cardinfo):
     if source_type == 'drive':
         return drive_get_card_filename(cardinfo)
     else:
-        return cardinfo[2]
+        return http_get_card_filename(cardinfo)
 
 
 def get_filename_id(source_type, filename, file_id):
@@ -379,7 +392,7 @@ def download_card(bar: tqdm, cardinfo):
             # Cards are normally put onto the queue as tuples of the image filepath and slots
             card_item = filepath, text_to_list(cardinfo[1])
     except Exception as e:
-        q_error.put(f"Failed to parse card with id {file_id}: {e}")
+        q_error.put(f"Failed to parse card with id {file_id}, cardinfo {cardinfo}: {e}")
 
     # Add to the appropriate queue
     if file_face == "front":
