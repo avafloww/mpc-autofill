@@ -284,96 +284,83 @@ def wait(driver):
         return
 
 
+def drive_get_card_filename(cardinfo):
+    # Attempt to retrieve the filename from function argument (XML)
+    file_id = cardinfo[0]
+    try:
+        filename = cardinfo[2]
+        # this is pretty fucking stupid but if it works it works
+        if filename == "":
+            raise IndexError
+
+        return filename
+    except IndexError:
+        # Can't retrieve filename from argument (XML) - retrieve it from a google app query instead
+        # Credit to https://tanaikech.github.io/2017/03/20/download-files-without-authorization-from-google-drive/
+        # use the results with a 'with' statement to avoid issues w/ connection broken
+        try:
+            with requests_post(
+                    "https://script.google.com/macros/s/AKfycbw90rkocSdppkEuyVdsTuZNslrhd5zNT3XMgfucNMM1JjhLl-Q/exec",
+                    data={"id": file_id},
+                    timeout=30,
+            ) as r_info:
+                return r_info.json()["name"]
+        except requests_Timeout:
+            # Failed to retrieve image name - add it to error queue
+            q_error.put(
+                f"Failed to retrieve filename for image with ID {TEXT_BOLD}{file_id}{TEXT_END} >"
+            )
+
+            return None
+
+
+def get_file_source_type(file_id):
+    if file_id.startswith('http'):
+        return 'http'
+    else:
+        return 'drive'
+
+
+def get_file_name(source_type, cardinfo):
+    if source_type == 'drive':
+        return drive_get_card_filename(cardinfo)
+    else:
+        return cardinfo[2]
+
+
 def download_card(bar: tqdm, cardinfo):
     card_item = ("", "")
     try:
         # Retrieve file ID and face from function argument
         file_id = cardinfo[0]
         file_face = cardinfo[3]
-        # Attempt to retrieve the filename from function argument (XML)
-        try:
-            filename = cardinfo[2]
-            # this is pretty fucking stupid but if it works it works
-            if filename == "":
-                raise IndexError
+        source_type = get_file_source_type(file_id)
+        filename = get_file_name(source_type, cardinfo)
 
-        except IndexError:
-            # Can't retrieve filename from argument (XML) - retrieve it from a google app query instead
-            # Credit to https://tanaikech.github.io/2017/03/20/download-files-without-authorization-from-google-drive/
-            # use the results with a 'with' statement to avoid issues w/ connection broken
-            try:
-                with requests_post(
-                    "https://script.google.com/macros/s/AKfycbw90rkocSdppkEuyVdsTuZNslrhd5zNT3XMgfucNMM1JjhLl-Q/exec",
-                    data={"id": file_id},
-                    timeout=30,
-                ) as r_info:
-                    filename = r_info.json()["name"]
-            except requests_Timeout:
-                # Failed to retrieve image name - add it to error queue
-                print("cant get filename so gonna exih")
-                q_error.put(
-                    f"Failed to retrieve filename for image with ID {TEXT_BOLD}{file_id}{TEXT_END} >"
-                )
+        # Split the filename on extension and add in the ID as well
+        # The filename with and without the ID in parentheses is checked for, so if the user downloads the image from
+        # Google Drive without modifying the filename, it should work as expected
+        # However, looking for the file with the ID in parentheses is preferred because it eliminates the possibility
+        # of filename clashes between different images
+        filename_split = filename.rsplit(".", 1)
+        filename_id = filename_split[0] + " (" + file_id + ")." + filename_split[1]
 
-        # in the case of file name request failing, filepath will be referenced before assignment unless we do this
-        filepath = ""
-        if filename:
-            # Split the filename on extension and add in the ID as well
-            # The filename with and without the ID in parentheses is checked for, so if the user downloads the image from
-            # Google Drive without modifying the filename, it should work as expected
-            # However, looking for the file with the ID in parentheses is preferred because it eliminates the possibility
-            # of filename clashes between different images
-            filename_split = filename.rsplit(".", 1)
-            filename_id = filename_split[0] + " (" + file_id + ")." + filename_split[1]
+        # Filepath from filename
+        # TODO: os.path.join?
+        filepath = cards_folder + "/" + filename
 
-            # Filepath from filename
-            # TODO: os.path.join?
-            filepath = cards_folder + "/" + filename
+        if not os.path.isfile(filepath) or os.path.getsize(filepath) <= 0:
+            # The filepath without ID in parentheses doesn't exist - change the filepath to contain the ID instead
+            filepath = cards_folder + "/" + filename_id
 
-            if not os.path.isfile(filepath) or os.path.getsize(filepath) <= 0:
-                # The filepath without ID in parentheses doesn't exist - change the filepath to contain the ID instead
-                filepath = cards_folder + "/" + filename_id
-
-            # Download the image if it doesn't exist, or if it does exist but it's empty
-            if (not os.path.isfile(filepath)) or os.path.getsize(filepath) <= 0:
-                # Google script request for file contents
-                # Set the request's timeout to 30 seconds, so if the server decides to not respond, we can
-                # move on without stopping the whole autofill process    )) > 0 and text_to_list(cardinfo[1])[0] > 10:
-                try:
-
-                    # Five attempts at downloading the image, in case the api returns an empty image for whatever reason
-                    attempt_counter = 0
-                    image_downloaded = False
-                    while attempt_counter < 5 and not image_downloaded:
-
-                        with requests_post(
-                            "https://script.google.com/macros/s/AKfycbzzCWc2x3tfQU1Zp45LB1P19FNZE-4njwzfKT5_Rx399h-5dELZWyvf/exec",
-                            data={"id": file_id},
-                            timeout=120,
-                        ) as r_contents:
-
-                            # Check if the response returned any data
-                            filecontents = r_contents.json()["result"]
-                            if len(filecontents) > 0:
-                                # Download the image
-                                f = open(filepath, "bw")
-                                f.write(np_array(filecontents, dtype=np_uint8))
-                                f.close()
-                                image_downloaded = True
-                            else:
-                                attempt_counter += 1
-
-                    if not image_downloaded:
-                        # Tried to download image three times and never got any data, add to error queue
-                        q_error.put(
-                            f"{TEXT_BOLD}{filename}{TEXT_END}:\n  https://drive.google.com/uc?id={file_id}&export=download"
-                        )
-
-                except requests_Timeout:
-                    # Failed to download image because of a timeout error - add it to error queue
-                    q_error.put(
-                        f"{TEXT_BOLD}{filename}{TEXT_END}:\n  https://drive.google.com/uc?id={file_id}&export=download"
-                    )
+        # Download the image if it doesn't exist, or if it does exist but it's empty
+        if (not os.path.isfile(filepath)) or os.path.getsize(filepath) <= 0:
+            if source_type == 'http':
+                # http
+                download_card_http(file_id, filename, filepath)
+            else:
+                # drive
+                download_card_drive(file_id, filename, filepath)
 
         # Same check as before - if, after we've tried to download the image, the file doesn't exist or is empty,
         # or we couldn't retrieve the filename, we'll add it to an error queue and move on
@@ -381,13 +368,9 @@ def download_card(bar: tqdm, cardinfo):
         # counting issues, but they're put on as empty strings so the main thread knows to skip them
         if os.path.isfile(filepath) and os.path.getsize(filepath) > 0 and filename:
             # Cards are normally put onto the queue as tuples of the image filepath and slots
-            card_item = (filepath, text_to_list(cardinfo[1]))
-
+            card_item = filepath, text_to_list(cardinfo[1])
     except Exception as e:
-        # Really wanna put the nail in the coffin of stalling when an error occurs during image downloads
-        # Any uncaught exceptions just get ignored and the card is skipped, adding the empty entry onto the appropriate queue
-        # print("encountered an unexpected error <{}>".format(e))
-        q_error.put(f"https://drive.google.com/uc?id={file_id}&export=download")
+        q_error.put(f"Failed to parse card with id {file_id}: {e}")
 
     # Add to the appropriate queue
     if file_face == "front":
@@ -399,6 +382,51 @@ def download_card(bar: tqdm, cardinfo):
 
     # Increment progress bar
     bar.update(1)
+
+
+def download_card_http(file_id, filename, filepath):
+    q_error.put(f"http download logic yet not implemented, but file_id = {file_id}, filename = {filename}, filepath = {filepath}")
+
+
+def download_card_drive(file_id, filename, filepath):
+    # Google script request for file contents
+    # Set the request's timeout to 30 seconds, so if the server decides to not respond, we can
+    # move on without stopping the whole autofill process    )) > 0 and text_to_list(cardinfo[1])[0] > 10:
+    try:
+
+        # Five attempts at downloading the image, in case the api returns an empty image for whatever reason
+        attempt_counter = 0
+        image_downloaded = False
+        while attempt_counter < 5 and not image_downloaded:
+
+            with requests_post(
+                "https://script.google.com/macros/s/AKfycbzzCWc2x3tfQU1Zp45LB1P19FNZE-4njwzfKT5_Rx399h-5dELZWyvf/exec",
+                data={"id": file_id},
+                timeout=120,
+            ) as r_contents:
+
+                # Check if the response returned any data
+                filecontents = r_contents.json()["result"]
+                if len(filecontents) > 0:
+                    # Download the image
+                    f = open(filepath, "bw")
+                    f.write(np_array(filecontents, dtype=np_uint8))
+                    f.close()
+                    image_downloaded = True
+                else:
+                    attempt_counter += 1
+
+        if not image_downloaded:
+            # Tried to download image three times and never got any data, add to error queue
+            q_error.put(
+                f"{TEXT_BOLD}{filename}{TEXT_END}:\n  https://drive.google.com/uc?id={file_id}&export=download"
+            )
+
+    except requests_Timeout:
+        # Failed to download image because of a timeout error - add it to error queue
+        q_error.put(
+            f"{TEXT_BOLD}{filename}{TEXT_END}:\n  https://drive.google.com/uc?id={file_id}&export=download"
+        )
 
 
 def upload_card(driver, filepath):
@@ -451,6 +479,7 @@ def card_not_uploaded(driver, slots):
         results += len(driver.find_elements_by_xpath(xpath))
 
     return len(slots) == results
+
 
 def insert_card(driver, pid, slots):
     if pid != "":
